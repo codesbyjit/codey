@@ -187,14 +187,14 @@ fn parse_model_response(
 ) -> Result<ModelResponse, Box<dyn std::error::Error>> {
     let text = text.trim();
 
-    // 1. Normal JSON.
+    // 1. Normal JSON
     if let Ok(response) =
         serde_json::from_str::<ModelResponse>(text)
     {
         return Ok(normalize_response(response));
     }
 
-    // 2. JSON inside ```json ... ```.
+    // 2. JSON inside markdown
     if let Some(json) = extract_code_block(text) {
         if let Ok(response) =
             serde_json::from_str::<ModelResponse>(json)
@@ -203,13 +203,18 @@ fn parse_model_response(
         }
     }
 
-    // 3. JSON surrounded by explanatory text.
+    // 3. JSON surrounded by text
     if let Some(json) = extract_json_object(text) {
         if let Ok(response) =
             serde_json::from_str::<ModelResponse>(json)
         {
             return Ok(normalize_response(response));
         }
+    }
+
+    // 4. Model-native-looking tool call
+    if let Some(response) = parse_tool_call_format(text) {
+        return Ok(response);
     }
 
     Err(
@@ -426,4 +431,117 @@ fn required_string<'a>(
             )
             .into()
         })
+}
+
+fn parse_tool_call_format(
+    text: &str,
+) -> Option<ModelResponse> {
+    let start_marker = "<|tool_call_start|>";
+    let end_marker = "<|tool_call_end|>";
+
+    let start = text.find(start_marker)?;
+    let end = text.find(end_marker)?;
+
+    if end <= start {
+        return None;
+    }
+
+    let call = text[
+        start + start_marker.len()..end
+    ]
+    .trim();
+
+    // Expected:
+    //
+    // [write_file(path='hello.py', content='...')]
+
+    let call = call
+        .strip_prefix('[')?
+        .strip_suffix(']')?
+        .trim();
+
+    let open = call.find('(')?;
+    let close = call.rfind(')')?;
+
+    let tool = call[..open].trim();
+
+    let arguments_text =
+        &call[open + 1..close];
+
+    let arguments =
+        parse_python_style_arguments(arguments_text)?;
+
+    Some(ModelResponse {
+        response_type: "tool".to_string(),
+        content: None,
+        tool: Some(tool.to_string()),
+        arguments: Some(arguments),
+        path: None,
+        pattern: None,
+        command: None,
+    })
+}
+
+fn parse_python_style_arguments(
+    input: &str,
+) -> Option<Value> {
+    let mut object =
+        serde_json::Map::new();
+
+    let mut current = String::new();
+    let mut parts = Vec::new();
+
+    let mut quote = None;
+
+    for character in input.chars() {
+        match character {
+            '\'' | '"' if quote.is_none() => {
+                quote = Some(character);
+                current.push(character);
+            }
+
+            '\'' | '"' if quote == Some(character) => {
+                quote = None;
+                current.push(character);
+            }
+
+            ',' if quote.is_none() => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+
+            _ => current.push(character),
+        }
+    }
+
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+
+    for part in parts {
+        let (key, value) =
+            part.split_once('=')?;
+
+        let key = key.trim();
+
+        let value = value.trim();
+
+        let value = value
+            .strip_prefix('\'')
+            .and_then(|v| v.strip_suffix('\''))
+            .or_else(|| {
+                value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+            })?;
+
+        object.insert(
+            key.to_string(),
+            Value::String(
+                value.to_string()
+            ),
+        );
+    }
+
+    Some(Value::Object(object))
 }
