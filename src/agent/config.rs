@@ -3,8 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 
 const DEFAULT_MODEL: &str = "openrouter/free";
-const OPENROUTER_URL: &str =
-    "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+pub const DEFAULT_CONTEXT_WINDOW: usize = 128_000;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -18,10 +18,7 @@ impl Config {
         let path = config_path()?;
 
         if !path.exists() {
-            return Err(
-                "Codey is not configured. Run `codey setup` first."
-                    .into(),
-            );
+            return Err("Codey is not configured. Run `codey setup` first.".into());
         }
 
         let content = fs::read_to_string(path)?;
@@ -56,12 +53,10 @@ impl Config {
 fn config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let home = std::env::var("HOME")?;
 
-    Ok(
-        PathBuf::from(home)
-            .join(".config")
-            .join("codey")
-            .join("config.toml"),
-    )
+    Ok(PathBuf::from(home)
+        .join(".config")
+        .join("codey")
+        .join("config.toml"))
 }
 
 pub fn default_model() -> &'static str {

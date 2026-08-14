@@ -7,8 +7,7 @@ use std::io::{self, Write};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> =
-        env::args().skip(1).collect();
+    let args: Vec<String> = env::args().skip(1).collect();
 
     match args.first().map(String::as_str) {
         Some("setup") => {
@@ -16,9 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
 
-        Some("help")
-        | Some("--help")
-        | Some("-h") => {
+        Some("help") | Some("--help") | Some("-h") => {
             print_help();
             return Ok(());
         }
@@ -35,8 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Prompt supplied directly.
     let prompt = args.join(" ");
 
-    let result =
-        agent::run(&prompt).await?;
+    let result = agent::run(&prompt).await?;
 
     println!("\nCodey: {result}");
 
@@ -49,37 +45,27 @@ fn setup() -> Result<(), Box<dyn std::error::Error>> {
     println!("───────────");
     println!();
 
-    let provider =
-        ask("Provider", "openrouter")?;
+    let provider = ask("Provider", "openrouter")?;
 
-    let api_key =
-        ask("API key", "")?;
+    let api_key = ask("API key", "")?;
 
     if api_key.is_empty() {
-        return Err(
-            "API key cannot be empty.".into()
-        );
+        return Err("API key cannot be empty.".into());
     }
 
-    let model =
-        ask(
-            "Model",
-            agent::config::default_model(),
-        )?;
+    let model = ask("Model", agent::config::default_model())?;
 
     let model = if model.is_empty() {
-        agent::config::default_model()
-            .to_string()
+        agent::config::default_model().to_string()
     } else {
         model
     };
 
-    let config =
-        agent::config::Config {
-            provider,
-            api_key,
-            model,
-        };
+    let config = agent::config::Config {
+        provider,
+        api_key,
+        model,
+    };
 
     config.save()?;
 
@@ -92,10 +78,7 @@ fn setup() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn ask(
-    name: &str,
-    default: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
+fn ask(name: &str, default: &str) -> Result<String, Box<dyn std::error::Error>> {
     if default.is_empty() {
         print!("{name}: ");
     } else {
@@ -104,14 +87,11 @@ fn ask(
 
     io::stdout().flush()?;
 
-    let mut input =
-        String::new();
+    let mut input = String::new();
 
-    io::stdin()
-        .read_line(&mut input)?;
+    io::stdin().read_line(&mut input)?;
 
-    let input =
-        input.trim();
+    let input = input.trim();
 
     if input.is_empty() {
         Ok(default.to_string())

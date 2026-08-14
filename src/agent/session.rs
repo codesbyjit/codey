@@ -1,9 +1,4 @@
-use super::{
-    config,
-    context::Context,
-    prompt,
-    ChatMessage,
-};
+use super::{ChatMessage, config, context::Context, prompt};
 
 #[derive(Debug)]
 pub struct Session {
@@ -13,9 +8,22 @@ pub struct Session {
 
 impl Session {
     pub fn new() -> Self {
-        Self {
+        let mut session = Self {
             context: Context::new(),
             model: config::default_model().to_string(),
+        };
+
+        session.initialize();
+
+        session
+    }
+
+    fn initialize(&mut self) {
+        if self.context.is_empty() {
+            self.context.add(ChatMessage {
+                role: "system".to_string(),
+                content: prompt::SYSTEM_PROMPT.to_string(),
+            });
         }
     }
 
@@ -23,10 +31,7 @@ impl Session {
         &self.model
     }
 
-    pub fn set_model(
-        &mut self,
-        model: impl Into<String>,
-    ) {
+    pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
     }
 
@@ -38,52 +43,45 @@ impl Session {
         &mut self.context
     }
 
+    pub fn messages(&self) -> &[ChatMessage] {
+        self.context.messages()
+    }
+
     pub fn clear(&mut self) {
         self.context.clear();
         self.initialize();
     }
 
-    pub fn initialize(&mut self) {
-        self.context.add(ChatMessage {
-            role: "system".to_string(),
-            content: prompt::SYSTEM_PROMPT.to_string(),
-        });
-    }
-
-    pub fn add_user_message(
-        &mut self,
-        content: impl Into<String>,
-    ) {
+    pub fn add_user_message(&mut self, content: impl Into<String>) {
         self.context.add(ChatMessage {
             role: "user".to_string(),
             content: content.into(),
         });
     }
 
-    pub fn add_assistant_message(
-        &mut self,
-        content: impl Into<String>,
-    ) {
+    pub fn add_assistant_message(&mut self, content: impl Into<String>) {
         self.context.add(ChatMessage {
             role: "assistant".to_string(),
             content: content.into(),
         });
     }
 
-    pub fn add_tool_result(
-        &mut self,
-        tool: &str,
-        result: &str,
-    ) {
+    pub fn add_tool_result(&mut self, tool: impl Into<String>, result: impl Into<String>) {
         self.context.add(ChatMessage {
-            role: "user".to_string(),
-            content: format!(
-                "Tool `{tool}` result:\n{result}"
-            ),
+            role: "tool".to_string(),
+            content: format!("Tool `{}` result:\n{}", tool.into(), result.into()),
         });
     }
 
-    pub fn messages(&self) -> &[ChatMessage] {
-        self.context.messages()
+    pub fn context_tokens(&self) -> usize {
+        self.context.estimated_tokens()
+    }
+
+    pub fn context_usage_percent(&self) -> f64 {
+        let used = self.context.estimated_tokens() as f64;
+
+        let max = config::DEFAULT_CONTEXT_WINDOW as f64;
+
+        (used / max) * 100.0
     }
 }

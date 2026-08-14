@@ -1,7 +1,8 @@
 pub mod config;
-pub mod prompt;
 pub mod context;
+pub mod prompt;
 pub mod session;
+pub mod session_manager;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -57,21 +58,16 @@ struct ModelResponse {
     command: Option<String>,
 }
 
-pub async fn run( // this is for codey -- run one liner
+pub async fn run(
+    // this is for codey -- run one liner
     user_prompt: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut session = Session::new();
 
-    session.initialize();
-
-    run_session(
-        &mut session,
-        user_prompt,
-    )
-    .await
+    run_session(&mut session, user_prompt).await
 }
 
-pub async fn run_session ( // main tui
+pub async fn run_session(
     session: &mut Session,
     user_prompt: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -79,183 +75,109 @@ pub async fn run_session ( // main tui
 
     let client = reqwest::Client::new();
 
-    for iteration in 1..=MAX_ITERATIONS {
-        println!(
-            "\n--- Agent step {iteration} ---"
-        );
-
-        let response = call_model(
-            &client,
-            session,
-        )
-        .await?;
+    for _iteration in 1..=MAX_ITERATIONS {
+        let response = call_model(&client, session).await?;
 
         let message = response
             .choices
             .first()
-            .ok_or(
-                "OpenRouter returned no choices"
-            )?
+            .ok_or("OpenRouter returned no choices")?
             .message
             .clone();
 
-        println!(
-            "\nModel:\n{}",
-            message.content
-        );
-
-        session.add_assistant_message(
-            message.content.clone(),
-        );
-
-        let decision =
-            parse_model_response(
-                &message.content
-            )?;
+        let decision = parse_model_response(&message.content)?;
 
         match decision.response_type.as_str() {
             "tool" => {
                 let tool_name = decision
                     .tool
                     .as_deref()
-                    .ok_or(
-                        "Tool response is missing `tool`"
-                    )?;
+                    .ok_or("Tool response is missing `tool`")?;
 
-                let arguments =
-                    decision.arguments
-                        .unwrap_or_else(|| {
-                            Value::Object(
-                                Default::default()
-                            )
-                        });
+                let arguments = decision
+                    .arguments
+                    .unwrap_or_else(|| Value::Object(Default::default()));
 
-                println!(
-                    "\nExecuting tool: {tool_name}"
-                );
+                let result = execute_tool(tool_name, &arguments)?;
 
-                let result =
-                    execute_tool(
-                        tool_name,
-                        &arguments,
-                    )?;
+                /*
+                 * Store the tool request in context.
+                 */
+                session.add_assistant_message(message.content.clone());
 
-                println!(
-                    "\nTool result:\n{result}"
-                );
-
-                session.add_tool_result(
-                    tool_name,
-                    &result,
-                );
+                /*
+                 * Store the tool result in context.
+                 */
+                session.add_tool_result(tool_name, &result);
             }
 
             "final" => {
-                return Ok(
-                    decision
-                        .content
-                        .unwrap_or_else(
-                            || "Done.".to_string()
-                        )
-                );
+                let content = decision.content.unwrap_or_else(|| "Done.".to_string());
+
+                /*
+                 * Only the actual final answer
+                 * becomes an assistant message.
+                 */
+                session.add_assistant_message(content.clone());
+
+                return Ok(content);
             }
 
             other => {
-                return Err(
-                    format!(
-                        "Unknown response type: {other}"
-                    )
-                    .into()
-                );
+                return Err(format!("Unknown response type: {other}").into());
             }
         }
     }
 
-    Err(
-        format!(
-            "Codey stopped after reaching the maximum of {MAX_ITERATIONS} agent steps."
-        )
-        .into(),
-    )
+    Err(format!("Codey stopped after reaching the maximum of {MAX_ITERATIONS} agent steps.").into())
 }
 
 async fn call_model(
     client: &reqwest::Client,
     session: &Session,
 ) -> Result<OpenRouterResponse, Box<dyn std::error::Error>> {
-    let config =
-        config::Config::load()?;
+    let config = config::Config::load()?;
 
-    let payload =
-        OpenRouterRequest {
-            model: session.model().to_string(),
-            messages: session
-                .messages()
-                .to_vec(),
-        };
+    let payload = OpenRouterRequest {
+        model: session.model().to_string(),
+        messages: session.messages().to_vec(),
+    };
 
     let response = client
         .post(config.api_url())
-        .header(
-            "Authorization",
-            format!(
-                "Bearer {}",
-                config.api_key
-            ),
-        )
-        .header(
-            "Content-Type",
-            "application/json",
-        )
-        .header(
-            "X-OpenRouter-Title",
-            "Codey",
-        )
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header("Content-Type", "application/json")
+        .header("X-OpenRouter-Title", "Codey")
         .json(&payload)
         .send()
         .await?;
 
     if !response.status().is_success() {
-        let status =
-            response.status();
+        let status = response.status();
 
-        let body =
-            response.text().await?;
+        let body = response.text().await?;
 
-        return Err(
-            format!(
-                "OpenRouter error ({status}): {body}"
-            )
-            .into(),
-        );
+        return Err(format!("OpenRouter error ({status}): {body}").into());
     }
 
     Ok(response.json().await?)
 }
 
-fn parse_model_response(
-    text: &str,
-) -> Result<ModelResponse, Box<dyn std::error::Error>> {
+fn parse_model_response(text: &str) -> Result<ModelResponse, Box<dyn std::error::Error>> {
     let text = text.trim();
 
-    if let Ok(response) =
-        serde_json::from_str::<ModelResponse>(text)
-    {
+    if let Ok(response) = serde_json::from_str::<ModelResponse>(text) {
         return Ok(normalize_response(response));
     }
 
     if let Some(json) = extract_code_block(text) {
-        if let Ok(response) =
-            serde_json::from_str::<ModelResponse>(json)
-        {
+        if let Ok(response) = serde_json::from_str::<ModelResponse>(json) {
             return Ok(normalize_response(response));
         }
     }
 
     if let Some(json) = extract_json_object(text) {
-        if let Ok(response) =
-            serde_json::from_str::<ModelResponse>(json)
-        {
+        if let Ok(response) = serde_json::from_str::<ModelResponse>(json) {
             return Ok(normalize_response(response));
         }
     }
@@ -264,20 +186,11 @@ fn parse_model_response(
         return Ok(response);
     }
 
-    Err(
-        format!(
-            "Model returned an invalid Codey response:\n\n{text}"
-        )
-        .into(),
-    )
+    Err(format!("Model returned an invalid Codey response:\n\n{text}").into())
 }
 
-fn normalize_response(
-    mut response: ModelResponse,
-) -> ModelResponse {
-    if response.response_type == "tool"
-        || response.response_type == "final"
-    {
+fn normalize_response(mut response: ModelResponse) -> ModelResponse {
+    if response.response_type == "tool" || response.response_type == "final" {
         return response;
     }
 
@@ -367,82 +280,47 @@ fn extract_json_object(text: &str) -> Option<&str> {
     Some(&text[start..=end])
 }
 
-fn execute_tool(
-    tool: &str,
-    arguments: &Value,
-) -> Result<String, Box<dyn std::error::Error>> {
+fn execute_tool(tool: &str, arguments: &Value) -> Result<String, Box<dyn std::error::Error>> {
     match tool {
         "read_file" => {
-            let path = required_string(
-                arguments,
-                "path",
-            )?;
+            let path = required_string(arguments, "path")?;
 
             Ok(tools::read_file(path)?)
         }
 
         "write_file" => {
-            let path = required_string(
-                arguments,
-                "path",
-            )?;
+            let path = required_string(arguments, "path")?;
 
-            let content = required_string(
-                arguments,
-                "content",
-            )?;
+            let content = required_string(arguments, "content")?;
 
-            Ok(tools::write_file(
-                path,
-                content,
-            )?)
+            Ok(tools::write_file(path, content)?)
         }
 
         "list_files" => {
-            let path = required_string(
-                arguments,
-                "path",
-            )?;
+            let path = required_string(arguments, "path")?;
 
             Ok(tools::list_files(path)?)
         }
 
         "search" => {
-            let pattern = required_string(
-                arguments,
-                "pattern",
-            )?;
+            let pattern = required_string(arguments, "pattern")?;
 
-            let path = required_string(
-                arguments,
-                "path",
-            )?;
+            let path = required_string(arguments, "path")?;
 
-            Ok(tools::search(
-                pattern,
-                path,
-            )?)
+            Ok(tools::search(pattern, path)?)
         }
 
         "shell" => {
-            let command = required_string(
-                arguments,
-                "command",
-            )?;
+            let command = required_string(arguments, "command")?;
 
-            println!(
-                "\nCodey wants to execute:\n$ {command}"
-            );
+            println!("\nCodey wants to execute:\n$ {command}");
 
             println!("Executing automatically for MVP...");
 
             Ok(tools::shell(command)?)
         }
 
-        _ => Err(
-            format!("Unknown tool: `{tool}`")
-                .into()
-        ),
+        _ => Err(format!("Unknown tool: `{tool}`").into()),
     }
 }
 
@@ -453,17 +331,10 @@ fn required_string<'a>(
     arguments
         .get(name)
         .and_then(Value::as_str)
-        .ok_or_else(|| {
-            format!(
-                "Missing string argument `{name}`"
-            )
-            .into()
-        })
+        .ok_or_else(|| format!("Missing string argument `{name}`").into())
 }
 
-fn parse_tool_call_format(
-    text: &str,
-) -> Option<ModelResponse> {
+fn parse_tool_call_format(text: &str) -> Option<ModelResponse> {
     let start_marker = "<|tool_call_start|>";
     let end_marker = "<|tool_call_end|>";
 
@@ -474,26 +345,18 @@ fn parse_tool_call_format(
         return None;
     }
 
-    let call = text[
-        start + start_marker.len()..end
-    ]
-    .trim();
+    let call = text[start + start_marker.len()..end].trim();
 
-    let call = call
-        .strip_prefix('[')?
-        .strip_suffix(']')?
-        .trim();
+    let call = call.strip_prefix('[')?.strip_suffix(']')?.trim();
 
     let open = call.find('(')?;
     let close = call.rfind(')')?;
 
     let tool = call[..open].trim();
 
-    let arguments_text =
-        &call[open + 1..close];
+    let arguments_text = &call[open + 1..close];
 
-    let arguments =
-        parse_python_style_arguments(arguments_text)?;
+    let arguments = parse_python_style_arguments(arguments_text)?;
 
     Some(ModelResponse {
         response_type: "tool".to_string(),
@@ -506,11 +369,8 @@ fn parse_tool_call_format(
     })
 }
 
-fn parse_python_style_arguments(
-    input: &str,
-) -> Option<Value> {
-    let mut object =
-        serde_json::Map::new();
+fn parse_python_style_arguments(input: &str) -> Option<Value> {
+    let mut object = serde_json::Map::new();
 
     let mut current = String::new();
     let mut parts = Vec::new();
@@ -543,8 +403,7 @@ fn parse_python_style_arguments(
     }
 
     for part in parts {
-        let (key, value) =
-            part.split_once('=')?;
+        let (key, value) = part.split_once('=')?;
 
         let key = key.trim();
 
@@ -553,18 +412,9 @@ fn parse_python_style_arguments(
         let value = value
             .strip_prefix('\'')
             .and_then(|v| v.strip_suffix('\''))
-            .or_else(|| {
-                value
-                    .strip_prefix('"')
-                    .and_then(|v| v.strip_suffix('"'))
-            })?;
+            .or_else(|| value.strip_prefix('"').and_then(|v| v.strip_suffix('"')))?;
 
-        object.insert(
-            key.to_string(),
-            Value::String(
-                value.to_string()
-            ),
-        );
+        object.insert(key.to_string(), Value::String(value.to_string()));
     }
 
     Some(Value::Object(object))

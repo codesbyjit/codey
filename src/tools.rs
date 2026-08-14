@@ -2,29 +2,24 @@ use std::fs;
 use std::process::Command;
 
 pub fn read_file(path: &str) -> Result<String, String> {
-    fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read `{path}`: {e}"))
+    fs::read_to_string(path).map_err(|e| format!("Failed to read `{path}`: {e}"))
 }
 
 pub fn write_file(path: &str, content: &str) -> Result<String, String> {
-    fs::write(path, content)
-        .map_err(|e| format!("Failed to write `{path}`: {e}"))?;
+    fs::write(path, content).map_err(|e| format!("Failed to write `{path}`: {e}"))?;
 
     Ok(format!("Successfully wrote `{path}`"))
 }
 
 pub fn list_files(path: &str) -> Result<String, String> {
-    let entries = fs::read_dir(path)
-        .map_err(|e| format!("Failed to list `{path}`: {e}"))?;
+    let entries = fs::read_dir(path).map_err(|e| format!("Failed to list `{path}`: {e}"))?;
 
     let mut result = String::new();
 
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
 
-        let file_type = entry
-            .file_type()
-            .map_err(|e| e.to_string())?;
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
 
         let name = entry.file_name().to_string_lossy().to_string();
 

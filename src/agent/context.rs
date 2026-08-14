@@ -35,9 +35,7 @@ impl Context {
     pub fn estimated_tokens(&self) -> usize {
         self.messages
             .iter()
-            .map(|message| {
-                message.content.len() / 4
-            })
+            .map(|message| message.content.len() / 4)
             .sum()
     }
 }
