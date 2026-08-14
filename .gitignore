@@ -21,7 +21,8 @@ target
 #.idea/
 
 .dev
-src/agent/config.rs
+.opencode
+*.env
 
 # Added by cargo
 
