@@ -1,5 +1,6 @@
 mod agent;
 mod tools;
+mod tui;
 
 use std::env;
 use std::io::{self, Write};
@@ -15,7 +16,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
 
-        Some("help") | Some("--help") | Some("-h") => {
+        Some("help")
+        | Some("--help")
+        | Some("-h") => {
             print_help();
             return Ok(());
         }
@@ -23,14 +26,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     }
 
-    let prompt = args.join(" ");
-
-    if prompt.is_empty() {
-        print_help();
+    // No prompt = interactive TUI.
+    if args.is_empty() {
+        tui::run().await?;
         return Ok(());
     }
 
-    let result = agent::run(&prompt).await?;
+    // Prompt supplied directly.
+    let prompt = args.join(" ");
+
+    let result =
+        agent::run(&prompt).await?;
 
     println!("\nCodey: {result}");
 
@@ -43,15 +49,11 @@ fn setup() -> Result<(), Box<dyn std::error::Error>> {
     println!("───────────");
     println!();
 
-    let provider = ask(
-        "Provider",
-        "openrouter",
-    )?;
+    let provider =
+        ask("Provider", "openrouter")?;
 
-    let api_key = ask(
-        "API key",
-        "",
-    )?;
+    let api_key =
+        ask("API key", "")?;
 
     if api_key.is_empty() {
         return Err(
@@ -59,22 +61,25 @@ fn setup() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let model = ask(
-        "Model",
-        agent::config::default_model(),
-    )?;
+    let model =
+        ask(
+            "Model",
+            agent::config::default_model(),
+        )?;
 
     let model = if model.is_empty() {
-        agent::config::default_model().to_string()
+        agent::config::default_model()
+            .to_string()
     } else {
         model
     };
 
-    let config = agent::config::Config {
-        provider,
-        api_key,
-        model,
-    };
+    let config =
+        agent::config::Config {
+            provider,
+            api_key,
+            model,
+        };
 
     config.save()?;
 
@@ -82,9 +87,6 @@ fn setup() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Configuration saved.");
     println!();
     println!("Codey is ready.");
-    println!();
-    println!("Run:");
-    println!("  codey \"your task\"");
     println!();
 
     Ok(())
@@ -102,11 +104,14 @@ fn ask(
 
     io::stdout().flush()?;
 
-    let mut input = String::new();
+    let mut input =
+        String::new();
 
-    io::stdin().read_line(&mut input)?;
+    io::stdin()
+        .read_line(&mut input)?;
 
-    let input = input.trim();
+    let input =
+        input.trim();
 
     if input.is_empty() {
         Ok(default.to_string())
@@ -119,7 +124,8 @@ fn print_help() {
     println!("Codey - terminal coding agent");
     println!();
     println!("Usage:");
-    println!("  codey setup");
+    println!("  codey");
     println!("  codey \"your task\"");
+    println!("  codey setup");
     println!("  codey help");
 }

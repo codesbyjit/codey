@@ -1,17 +1,20 @@
 pub mod config;
 pub mod prompt;
+pub mod context;
+pub mod session;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use session::Session;
 
 use crate::tools;
 
 const MAX_ITERATIONS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
+pub(crate) struct ChatMessage {
+    pub(crate) role: String,
+    pub(crate) content: String,
 }
 
 #[derive(Serialize)]
@@ -44,12 +47,6 @@ struct ModelResponse {
     #[serde(default)]
     arguments: Option<Value>,
 
-    // Shorthand tool format support:
-    //
-    // {
-    //   "type": "read_file",
-    //   "path": "src/main.rs"
-    // }
     #[serde(default)]
     path: Option<String>,
 
@@ -60,77 +57,115 @@ struct ModelResponse {
     command: Option<String>,
 }
 
-pub async fn run(
+pub async fn run( // this is for codey -- run one liner
     user_prompt: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    let mut session = Session::new();
+
+    session.initialize();
+
+    run_session(
+        &mut session,
+        user_prompt,
+    )
+    .await
+}
+
+pub async fn run_session ( // main tui
+    session: &mut Session,
+    user_prompt: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    session.add_user_message(user_prompt);
+
     let client = reqwest::Client::new();
 
-    let mut history = vec![
-        ChatMessage {
-            role: "system".to_string(),
-            content: prompt::SYSTEM_PROMPT.to_string(),
-        },
-        ChatMessage {
-            role: "user".to_string(),
-            content: user_prompt.to_string(),
-        },
-    ];
-
     for iteration in 1..=MAX_ITERATIONS {
-        println!("\n--- Agent step {iteration} ---");
+        println!(
+            "\n--- Agent step {iteration} ---"
+        );
 
-        let response = call_model(&client, &history).await?;
+        let response = call_model(
+            &client,
+            session,
+        )
+        .await?;
 
         let message = response
             .choices
             .first()
-            .ok_or("OpenRouter returned no choices")?
+            .ok_or(
+                "OpenRouter returned no choices"
+            )?
             .message
             .clone();
 
-        println!("\nModel:\n{}", message.content);
+        println!(
+            "\nModel:\n{}",
+            message.content
+        );
 
-        history.push(message.clone());
+        session.add_assistant_message(
+            message.content.clone(),
+        );
 
-        let decision = parse_model_response(&message.content)?;
+        let decision =
+            parse_model_response(
+                &message.content
+            )?;
 
         match decision.response_type.as_str() {
             "tool" => {
                 let tool_name = decision
                     .tool
                     .as_deref()
-                    .ok_or("Tool response is missing `tool`")?;
+                    .ok_or(
+                        "Tool response is missing `tool`"
+                    )?;
 
-                let arguments = decision
-                    .arguments
-                    .unwrap_or_else(|| Value::Object(Default::default()));
+                let arguments =
+                    decision.arguments
+                        .unwrap_or_else(|| {
+                            Value::Object(
+                                Default::default()
+                            )
+                        });
 
-                println!("\nExecuting tool: {tool_name}");
+                println!(
+                    "\nExecuting tool: {tool_name}"
+                );
 
-                let result = execute_tool(tool_name, &arguments)?;
+                let result =
+                    execute_tool(
+                        tool_name,
+                        &arguments,
+                    )?;
 
-                println!("\nTool result:\n{result}");
+                println!(
+                    "\nTool result:\n{result}"
+                );
 
-                history.push(ChatMessage {
-                    role: "user".to_string(),
-                    content: format!(
-                        "Tool `{tool_name}` result:\n{result}"
-                    ),
-                });
+                session.add_tool_result(
+                    tool_name,
+                    &result,
+                );
             }
 
             "final" => {
                 return Ok(
                     decision
                         .content
-                        .unwrap_or_else(|| "Done.".to_string())
+                        .unwrap_or_else(
+                            || "Done.".to_string()
+                        )
                 );
             }
 
             other => {
                 return Err(
-                    format!("Unknown response type: {other}")
-                        .into()
+                    format!(
+                        "Unknown response type: {other}"
+                    )
+                    .into()
                 );
             }
         }
@@ -146,30 +181,46 @@ pub async fn run(
 
 async fn call_model(
     client: &reqwest::Client,
-    history: &[ChatMessage],
+    session: &Session,
 ) -> Result<OpenRouterResponse, Box<dyn std::error::Error>> {
-    let config = config::Config::load()?;
+    let config =
+        config::Config::load()?;
 
-    let payload = OpenRouterRequest {
-        model: config.model.clone(),
-        messages: history.to_vec(),
-    };
+    let payload =
+        OpenRouterRequest {
+            model: session.model().to_string(),
+            messages: session
+                .messages()
+                .to_vec(),
+        };
 
     let response = client
         .post(config.api_url())
         .header(
             "Authorization",
-            format!("Bearer {}", config.api_key),
+            format!(
+                "Bearer {}",
+                config.api_key
+            ),
         )
-        .header("Content-Type", "application/json")
-        .header("X-OpenRouter-Title", "Codey")
+        .header(
+            "Content-Type",
+            "application/json",
+        )
+        .header(
+            "X-OpenRouter-Title",
+            "Codey",
+        )
         .json(&payload)
         .send()
         .await?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await?;
+        let status =
+            response.status();
+
+        let body =
+            response.text().await?;
 
         return Err(
             format!(
@@ -187,14 +238,12 @@ fn parse_model_response(
 ) -> Result<ModelResponse, Box<dyn std::error::Error>> {
     let text = text.trim();
 
-    // 1. Normal JSON
     if let Ok(response) =
         serde_json::from_str::<ModelResponse>(text)
     {
         return Ok(normalize_response(response));
     }
 
-    // 2. JSON inside markdown
     if let Some(json) = extract_code_block(text) {
         if let Ok(response) =
             serde_json::from_str::<ModelResponse>(json)
@@ -203,7 +252,6 @@ fn parse_model_response(
         }
     }
 
-    // 3. JSON surrounded by text
     if let Some(json) = extract_json_object(text) {
         if let Ok(response) =
             serde_json::from_str::<ModelResponse>(json)
@@ -212,7 +260,6 @@ fn parse_model_response(
         }
     }
 
-    // 4. Model-native-looking tool call
     if let Some(response) = parse_tool_call_format(text) {
         return Ok(response);
     }
@@ -228,25 +275,6 @@ fn parse_model_response(
 fn normalize_response(
     mut response: ModelResponse,
 ) -> ModelResponse {
-    // Expected format:
-    //
-    // {
-    //   "type": "tool",
-    //   "tool": "read_file",
-    //   "arguments": {
-    //     "path": "src/main.rs"
-    //   }
-    // }
-    //
-    // But some models return:
-    //
-    // {
-    //   "type": "read_file",
-    //   "path": "src/main.rs"
-    // }
-    //
-    // Normalize the second form into the first.
-
     if response.response_type == "tool"
         || response.response_type == "final"
     {
@@ -450,10 +478,6 @@ fn parse_tool_call_format(
         start + start_marker.len()..end
     ]
     .trim();
-
-    // Expected:
-    //
-    // [write_file(path='hello.py', content='...')]
 
     let call = call
         .strip_prefix('[')?
