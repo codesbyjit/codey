@@ -1,4 +1,4 @@
-use super::{ChatMessage, config, context::Context, prompt};
+use super::{config, context::Context, prompt, ChatMessage};
 
 #[derive(Debug)]
 pub struct Session {
