@@ -23,6 +23,7 @@ target
 .dev
 .opencode
 *.env
+.docs
 
 # Added by cargo
 

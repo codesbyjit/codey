@@ -1,9 +1,3 @@
-//! Codey configuration.
-//!
-//! Stored as TOML at `<config_dir>/codey/config.toml` (e.g.
-//! `~/.config/codey/config.toml`). Secrets are never hardcoded; they are read
-//! from this file or from environment variables, which take precedence.
-
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -11,16 +5,14 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_MODEL: &str = "openrouter/free";
 pub const DEFAULT_CONTEXT_WINDOW: usize = 128_000;
 
-/// How aggressively Codey asks for confirmation before risky operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfirmationMode {
-    /// Ask only before destructive / dangerous operations.
     #[default]
     Dangerous,
-    /// Ask before every tool that mutates state.
+
     Always,
-    /// Never ask (use with care).
+
     Never,
 }
 
@@ -33,8 +25,7 @@ pub struct Config {
     pub base_url: String,
     #[serde(default = "default_context_window")]
     pub context_window: usize,
-    /// Workspace the agent operates in. `None` means the current directory
-    /// at launch time.
+
     #[serde(default)]
     pub workspace: Option<PathBuf>,
     #[serde(default)]
@@ -64,8 +55,8 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Load configuration from disk, then apply environment overrides.
     pub fn load() -> Result<Self> {
+        Self::load_dotenv();
         let mut config = Self::load_from_disk().unwrap_or_default();
         config.apply_env();
         if config.api_key.is_empty() {
@@ -74,8 +65,8 @@ impl Config {
         Ok(config)
     }
 
-    /// Load without requiring an API key (used by `codey setup` itself).
     pub fn load_or_default() -> Self {
+        Self::load_dotenv();
         let mut config = Self::load_from_disk().unwrap_or_default();
         config.apply_env();
         config
@@ -85,6 +76,44 @@ impl Config {
         let path = config_path()?;
         let content = std::fs::read_to_string(path).ok()?;
         toml::from_str(&content).ok()
+    }
+
+    fn load_dotenv() {
+        let friendly = [
+            ("API_KEY", "CODEY_API_KEY"),
+            ("MODEL_NAME", "CODEY_MODEL"),
+            ("API_URL", "CODEY_BASE_URL"),
+            ("PROVIDER", "CODEY_PROVIDER"),
+            ("CONTEXT_WINDOW", "CODEY_CONTEXT_WINDOW"),
+            ("CONFIRMATION_MODE", "CODEY_CONFIRMATION_MODE"),
+            ("WORKSPACE", "CODEY_WORKSPACE"),
+        ];
+
+        let mut dir = std::env::current_dir().ok();
+        while let Some(base) = dir {
+            let candidate = base.join(".env");
+            if candidate.is_file() {
+                if let Ok(content) = std::fs::read_to_string(&candidate) {
+                    for line in content.lines() {
+                        let line = line.trim();
+                        if line.is_empty() || line.starts_with('#') {
+                            continue;
+                        }
+                        if let Some((key, value)) = line.split_once('=') {
+                            let key = key.trim();
+                            let value = value.trim().trim_matches(['"', '\'']);
+
+                            if key.starts_with("CODEY_") {
+                                set_if_unset(key, value);
+                            } else if let Some(target) = friendly.iter().find(|(f, _)| *f == key) {
+                                set_if_unset(target.1, value);
+                            }
+                        }
+                    }
+                }
+            }
+            dir = base.parent().map(|p| p.to_path_buf());
+        }
     }
 
     fn apply_env(&mut self) {
@@ -127,7 +156,6 @@ impl Config {
         Ok(())
     }
 
-    /// The workspace directory, falling back to the current directory.
     pub fn workspace_path(&self) -> PathBuf {
         self.workspace
             .clone()
@@ -136,27 +164,32 @@ impl Config {
     }
 }
 
-/// Resolve the config file path: `<config_dir>/codey/config.toml`.
 pub fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("codey").join("config.toml"))
 }
 
-/// Resolve the Codey data directory (sessions, skills cache, etc.).
+fn set_if_unset(key: &str, value: &str) {
+    if std::env::var(key).is_err() {
+        std::env::set_var(key, value);
+    }
+}
+
+pub fn config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("codey"))
+}
+
 pub fn data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("codey"))
 }
 
-/// Resolve the user-level skills directory: `<config_dir>/codey/skills`.
 pub fn user_skills_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("codey").join("skills"))
 }
 
-/// Resolve the user-level MCP config path.
 pub fn mcp_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("codey").join("mcp.json"))
 }
 
-/// The base URL used when the user did not specify one.
 pub fn default_base_url_for(provider: &str) -> &'static str {
     match provider {
         "openrouter" => "https://openrouter.ai/api/v1/chat/completions",
@@ -166,23 +199,44 @@ pub fn default_base_url_for(provider: &str) -> &'static str {
     }
 }
 
-/// Convenience: does this path exist on disk as a config file?
 pub fn config_exists() -> bool {
     config_path().map(|p| p.exists()).unwrap_or(false)
 }
 
-/// Used by `codey setup` to render the path the user should know about.
 pub fn config_display_path() -> String {
     config_path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "~/.config/codey/config.toml".into())
 }
 
-/// Ensure a parent directory exists for any data file.
 pub fn ensure_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating dir {}", parent.display()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_base_url_known_providers() {
+        assert!(default_base_url_for("openrouter").contains("openrouter"));
+        assert!(default_base_url_for("openai").contains("openai"));
+        assert!(default_base_url_for("anthropic").contains("anthropic"));
+        assert!(default_base_url_for("unknown").contains("openrouter"));
+    }
+
+    #[test]
+    fn env_overrides_default_config() {
+        std::env::set_var("CODEY_MODEL", "openai/gpt-4o");
+        std::env::set_var("CODEY_PROVIDER", "openai");
+        let config = Config::load_or_default();
+        assert_eq!(config.model, "openai/gpt-4o");
+        assert_eq!(config.provider, "openai");
+        std::env::remove_var("CODEY_MODEL");
+        std::env::remove_var("CODEY_PROVIDER");
+    }
 }

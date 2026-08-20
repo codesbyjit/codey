@@ -21,6 +21,8 @@ crossterm = "0.28"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+regex = "1"
+tokio-stream = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "fs", "sync", "time", "io-util"] }

@@ -1,23 +1,14 @@
-//! Shared types for providers and the agent.
-//!
-//! These types form the contract between the agent loop, providers, and tools.
-//! Keeping them here avoids circular dependencies: `provider` depends on
-//! nothing in `agent`, and `agent` depends on `provider::types`.
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// A chat message exchanged with a model provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
-    /// For `tool` role messages: the name of the tool that produced `content`.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// For `assistant` messages that requested a tool call (OpenAI-style),
-    /// the structured call. We keep our own JSON-contract parsing separate,
-    /// but this is populated when a provider uses native tool calling.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Value>,
 }
@@ -60,42 +51,43 @@ impl ChatMessage {
     }
 }
 
-/// A tool definition handed to the model (and used to build the system prompt).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
-    /// JSON Schema object describing the arguments, e.g.
-    /// `{"type":"object","properties":{...},"required":[...]}`.
+
     pub parameters: Value,
 }
 
-/// The decision the model reached after a completion.
 #[derive(Debug, Clone)]
 pub enum FinishDecision {
-    /// The model produced a final natural-language answer.
     Final(String),
-    /// The model requested a tool invocation.
+
     ToolCall { name: String, arguments: Value },
 }
 
-/// Events emitted by a provider while a completion is in flight.
-///
-/// The agent loop forwards these to the UI so the user sees streaming text,
-/// tool calls, and errors without the UI thread ever blocking.
 #[derive(Debug, Clone)]
-pub enum ProviderEvent {
-    /// A chunk of the model's final answer (for streaming display).
-    TextDelta(String),
-    /// An informational status line, e.g. "contacting model".
-    Status(String),
-    /// The structured decision the model reached.
-    Decision(FinishDecision),
-    /// A transport/model error.
-    Error(String),
+pub struct CompletionResult {
+    pub decision: FinishDecision,
+    pub raw: String,
 }
 
-/// Errors that can occur while talking to a provider.
+#[derive(Debug, Clone)]
+pub struct CompletionRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    pub tools: Vec<ToolDefinition>,
+    pub temperature: f32,
+    pub max_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub enum StreamDelta {
+    Text(String),
+
+    Status(String),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     #[error("provider transport error: {0}")]
@@ -110,11 +102,32 @@ pub enum ProviderError {
     Config(String),
 }
 
-/// A JSON-value helper used widely when building tool arguments.
 pub fn string_arg(value: &Value, name: &str) -> Result<String, String> {
     value
         .get(name)
         .and_then(Value::as_str)
         .map(|s| s.to_string())
         .ok_or_else(|| format!("missing string argument `{name}`"))
+}
+
+pub fn require_arg<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
+    value
+        .get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("missing string argument `{name}`"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn extracts_string_arg() {
+        let v = json!({"path": "/tmp/x"});
+        assert_eq!(string_arg(&v, "path").unwrap(), "/tmp/x");
+        assert!(string_arg(&v, "missing").is_err());
+        assert_eq!(require_arg(&v, "path").unwrap(), "/tmp/x");
+        assert!(require_arg(&v, "missing").is_err());
+    }
 }
